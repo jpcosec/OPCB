@@ -1,41 +1,66 @@
+"""
+    Implementacion libre de segmentacion de imagenes en colores basado con modificaciones en
+    "Fast Image Segmentation Based on K-Means Clustering with Histograms in HSV Color Space" (2008)
+    de Chen, Chen y Chien, DOI:10.1109/MMSP.2008.4665097
+"""
+
 from sklearn.cluster import KMeans
-from sklearn.metrics import pairwise_distances_argmin
 from sklearn.utils import shuffle
-from matplotlib.colors import hsv_to_rgb
-from matplotlib import pyplot as plt
 import numpy as np
 import cv2
 
+# METODOS AUXILIARES DE CLUSTERING HSV
 
+# Funcion que limpia las n diagonales superior izquierdas de la DCT de la imagen
+def dct_clear(img,n=0):
+    #Recibe imagen y entero, retorna la imagen con la DCT limpia
+
+    #Se convierte la imagen a floats y se obtiene la transformacion de cosenos discretos
+    imf = np.float32(img)/255.0
+    dst = cv2.dct(imf)
+
+    #Se itera sobre la esquina dejandola en 0
+    for i in range(n):
+        for j in range(n):
+            if (i+j <=n):
+                dst[i,j]=0
+    dst[0,0]=0
+
+    #Se obtiene la inversa de la DCT
+    inv = cv2.idct(dst)
+
+    #Y se reescala la imagen para salida
+    mi=np.min(inv)
+    ma=np.max(inv)
+    k=255.0/(ma-mi)
+    inv=(inv-mi)*k
+    return inv.astype(np.uint8)
+
+# Funcion que crea tensor de imagenes binarias desde lista de pixeles
 def make_mask(labels, labels_idx, w, h):
-    # print "shapes", np.shape(labels), np.shape(labels_idx)
-    # print "w", w, "h",h
-    mask = np.zeros((max(labels) + 1, w, h), dtype=np.uint8)
-    # print "shape mask", np.shape(mask)
+    # Retorna un tensor con imagenes binarias de dimensiones especificadas
+    # Recibe lista de pixeles etiquetadas con su respectiva clase
 
+    # Se crea tensor con las dimensiones especificadas
+    mask = np.zeros((max(labels) + 1, w, h), dtype=np.uint8)
     i = labels_idx[0] / h
     j = labels_idx[0] % h
-    # print "i,j",i,",",j
-
+    # Se itera sobre vector asignando capa a posicion de pixel
     for idx in np.arange(len(labels)):
         lab = labels[idx]
-        # print lab, i[idx],j[idx]
         mask[lab, i[idx], j[idx]] = 1
-    # print "terminada mascara"
+
     return mask
 
-
-# Pinta una mascara
-def paint_mask(mask, colour):
-    w, h = tuple(mask.shape)
-    d = len(colour)
-    image = np.zeros((w, h, d))
-    for i in range(w):
-        for j in range(h):
-            image[i, j] = colour * mask[i, j]
-
-    return np.uint8(image)
-
+# funcion para colorear una mascara con un color indicado
+def paint_mask(inmask, incodebook):
+    w, h = tuple(inmask.shape)
+    d = 3
+    image = np.zeros((w, h, d), np.uint8)
+    image[:, :, 0] = inmask * incodebook[0]
+    image[:, :, 1] = inmask * incodebook[1]
+    image[:, :, 2] = inmask * incodebook[2]
+    return image
 
 # Separa escala de grises en hsv
 def idx_gray_split(image_array, umbral):
@@ -54,6 +79,7 @@ def binning(input_array):
     bin_array[:, 0] = np.round(bin_array[:, 0] / 6)
     bin_array[:, 1] = np.round(bin_array[:, 1] * 8.0 / 255.0)
     bin_array[:, 2] = np.round(bin_array[:, 2] * 8.0 / 255.0)
+    print bin_array
     return bin_array
 
 # Deshace el binning
@@ -62,7 +88,6 @@ def unbinning(array):
     array[:, 1] = array[:, 1] / 8 * 255
     array[:, 2] = array[:, 2] / 8 * 255
     return array.astype(np.uint8)
-
 
 # Realiza k-means por color, retorna centroides y etiquetas
 def color_kmeans(pixel_array, n_colors):
@@ -92,272 +117,147 @@ def gray_kmeans(pixel_array, n_grays):
         codebook[i, 2] = int(gray_codebook[i])
     return codebook, labels
 
-# no hace nada
-def nothing(x):
-    pass
+# METODOS PARA PROCESAR IMAGEN
 
-# Limpia las n diagonales superior-izquierdas del dct
-def dct_clear(img, n):
-    imf = np.float32(img) / 255.0  # float conversion/scale
-    dst = cv2.dct(imf)  # the dct
-    for i in range(n):
-        for j in range(n):
-            if (i + j < n):
-                dst[i, j] = 0
+# Funcion implementada para realizar clustering k-means en imagen generica
+def hsv_kmeans(img, n_colors=2, n_grays=3, clear_dct=False):
+    # Retorna tensor de imagenes binarias de pixeles clusterizados mas el codebook, grises y colores separados
+    # Recibe imagen mas numero de grises y colores y opcion limpiar los bajos de DCT
 
-    dst[0, 0] = 0
-    inv = cv2.idct(dst)
-    mi = np.min(inv)
-    ma = np.max(inv)
-    # print mi,ma
-    k = 255.0 / (ma - mi)
-    inv = (inv - mi) * k
-    # inv=abs(inv)*255
-    # print inv
-    return inv.astype(np.uint8)
+    # Se realiza una operacion de filtrado bilateral
+    img = cv2.bilateralFilter(img, 5, 90, 370)
+    hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
 
+    w, h, d = original_shape = tuple(img.shape)
 
-# Obtiene zonas conexas para una clasificacion mas limpia
+    if clear_dct!=False:
+        assert d == 3
+        hcol = np.zeros((w, h, d), np.uint8)
+        hcol = hcol + 50
+        hcol[:, :, 0] = hsv[:, :, 0]
+        hcol[:, :, 1] = dct_clear(hsv[:, :, 1], clear_dct)
+        hcol[:, :, 2] = dct_clear(hsv[:, :, 2], clear_dct)
+        hsv=hcol
+
+    # Se realiza un reshape a la imagen para dejarla en columnas de valores HSV de pixel
+    image_array = np.reshape(hsv, (w * h, d))
+
+    # Se separan pixeles entre imagenes en grises y en no grises
+    color_idx, gray_idx = idx_gray_split(image_array, 40)
+    pixel_color = image_array[color_idx]
+    pixel_gray = image_array[gray_idx]
+
+    # Se realizan los clusterings individualmente
+    print("Realizando clustering con colores separados")
+    color_codebook, color_labels = color_kmeans(pixel_color, n_colors)
+    gray_codebook, gray_labels = gray_kmeans(pixel_gray, n_grays)
+    print "Color Codeook", color_codebook
+    print "Gray Codebook", gray_codebook
+
+    # Se reconstruyen los binarios mascaras de color
+    gray_masks = make_mask(np.array(gray_labels), np.array(gray_idx), w, h)
+    color_masks = make_mask(np.array(color_labels), np.array(color_idx), w, h)
+    return gray_masks, color_masks, gray_codebook, color_codebook
+
+# Funcion para obtener zonas conexas
 def get_conected(soldermask, serigraphy):
-    # Se obtienen regiones conexas
+    #Retorna la zona de soldermask conexa, recibe soldermask y serigrafia
+
+    # Se suman soldermask y serigrafia
     img = soldermask + serigraphy
+
+    # Se hace operacion de closening para eliminar vacios
     kernel = np.ones((3, 3), np.uint8)
     img = cv2.morphologyEx(img, cv2.MORPH_CLOSE, kernel)
-    # kernel = np.ones((5,5),np.uint8)
-    erosion = cv2.erode(img, kernel, iterations=2)
-    # showImGray(img)
-    # showImGray(erosion)
 
+    # Se hace operacion de erosion
+    erosion = cv2.erode(img, kernel, iterations=2)
     # se obtienen los componentes conexos
     a, labels, stats, centroids = cv2.connectedComponentsWithStats(erosion)
+
+    # Se obtiene mayor area conexa
     areas = []
-    # se obtiene areas
     for i in np.arange(a):
         areas.append(stats[i][cv2.CC_STAT_AREA])
-    # Se obtiene el area de mayor conectividad
     lab_max = np.argmax(areas[1:-1])
-    # Se obtiene region de mayor conectividad
     max_connected = np.array(np.equal(labels, lab_max + 1) * 255, np.uint8)
+
+    # Se realiza operacion de apertura
     kernel = np.ones((5, 5), np.uint8)
     opening = cv2.morphologyEx(max_connected, cv2.MORPH_OPEN, kernel)
+    # Se realiza operacion de cierre
     kernel = np.ones((10, 10), np.uint8)
     back = cv2.morphologyEx(opening, cv2.MORPH_CLOSE, kernel)
     return back
 
-# muestra imagen en matplotlib
-def hsvplot(hsv, cutBox=False):
-    image = cv2.cvtColor(hsv, cv2.COLOR_HSV2RGB)
-    # showImBGR(image,cutBox)
-    if (cutBox != False):
-        x1, y1, x2, y2 = cutBox
-        image = image[y1:y2, x1:x2]
-    plt.imshow(image)
-    plt.show()
+# Funcion semiautomatica para segmentar soldermask
+def solder_mask(img, n_colors=2, n_grays=3 ):
+    # Retorna mascara de soldermask en imagen binaria
+    # Recibe imagen, y numero de colores a separar
 
-
-def hsv_kmeans(img, n_colors, n_grays):
-    img = cv2.bilateralFilter(img, 5, 90, 370)
-    hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
-
-    w, h, d = original_shape = tuple(img.shape)
-
-    assert d == 3
-    hcol = np.zeros((w, h, d), np.uint8)
-    hcol = hcol + 50
-    hcol[:, :, 0] = hsv[:, :, 0]
-    hcol[:, :, 1] = dct_clear(hsv[:, :, 1], 0)
-    hcol[:, :, 2] = dct_clear(hsv[:, :, 2], 0)
-
-
-    image_array = np.reshape(hcol, (w * h, d))
-
-    # Se separa entre imagenes en grises y en no grises
-    color_idx, gray_idx = idx_gray_split(image_array, 40)
-
-    pixel_color = image_array[color_idx]
-    pixel_gray = image_array[gray_idx]
-
-    # print "pixel color", pixel_color
-    # print "pixel gray",pixel_gray
-
-
-    # Se toma parte de la data para el clustering
-    print("Realizando clustering con colores separados")
-    color_codebook, color_labels = color_kmeans(pixel_color, n_colors)
-    gray_codebook, gray_labels = gray_kmeans(pixel_gray, n_grays)
-
-    print "Color Codegook", color_codebook,
-    print "Gray Codebook", gray_codebook
-
-    gray_masks = make_mask(np.array(gray_labels), np.array(gray_idx), w, h)
-    color_masks = make_mask(np.array(color_labels), np.array(color_idx), w, h)
-    return gray_masks, color_masks, color_codebook, gray_codebook
-
-# muestra imagen en matplotlib
-def hsvplot(hsv, cutBox=False):
-    image = cv2.cvtColor(hsv, cv2.COLOR_HSV2RGB)
-    # showImBGR(image,cutBox)
-    if (cutBox != False):
-        x1, y1, x2, y2 = cutBox
-        image = image[y1:y2, x1:x2]
-    plt.imshow(image)
-    plt.show()
-
-
-def hsv_kmeans(img, n_colors, n_grays):
-    img = cv2.bilateralFilter(img, 5, 90, 370)
-    hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
-
-    w, h, d = original_shape = tuple(img.shape)
-
-    assert d == 3
-    hcol = np.zeros((w, h, d), np.uint8)
-    hcol = hcol + 50
-    hcol[:, :, 0] = hsv[:, :, 0]
-    hcol[:, :, 1] = dct_clear(hsv[:, :, 1], 0)
-    hcol[:, :, 2] = dct_clear(hsv[:, :, 2], 0)
-
-
-    image_array = np.reshape(hcol, (w * h, d))
-
-    # Se separa entre imagenes en grises y en no grises
-    color_idx, gray_idx = idx_gray_split(image_array, 40)
-
-    pixel_color = image_array[color_idx]
-    pixel_gray = image_array[gray_idx]
-
-    # print "pixel color", pixel_color
-    # print "pixel gray",pixel_gray
-
-
-    # Se toma parte de la data para el clustering
-    print("Realizando clustering con colores separados")
-    color_codebook, color_labels = color_kmeans(pixel_color, n_colors)
-    gray_codebook, gray_labels = gray_kmeans(pixel_gray, n_grays)
-
-    print "Color Codegook", color_codebook,
-    print "Gray Codebook", gray_codebook
-
-    gray_masks = make_mask(np.array(gray_labels), np.array(gray_idx), w, h)
-    color_masks = make_mask(np.array(color_labels), np.array(color_idx), w, h)
-    return gray_masks, color_masks, color_codebook, gray_codebook
-
-def imptest():
-    print "lasorra"
-
-def back_mask(img,n_colors=2, n_grays=3):
     # Se obtiene la imagen clusterizada en color hsv
-    gray_masks, color_masks, color_codebook, gray_codebook = hsv_kmeans(img, n_colors, n_grays)
+    gray_masks, color_masks, gray_codebook,color_codebook, = hsv_kmeans(img, n_colors, n_grays)
 
-    # Se obtienen zonas mayoritarias, en este caso la mayor color sera soldermask y la mayor gris serigrafia
-    garr = []
-    for i in np.arange(np.shape(gray_masks)[0]):
-        garr.append(np.sum(gray_masks[i]))
+    # Se obtiene corte de imagen, usuario debe seleccionar zona con soldermask + serigrafia
+    x, y, w, h = cv2.selectROI("Roi_selector", img[0:900,0:1000])
+    print "seleccionar region con soldermask +serigrafia"
+    solder_reg=np.append(color_masks[:,y:y+h,x:x+w],gray_masks[:,y:y+h,x:x+w],axis=0)
 
+    # Se obtienen colores mayoritarios
+    total_reg=np.append(color_masks,gray_masks ,axis=0)
     carr = []
-    for i in np.arange(np.shape(color_masks)[0]):
-        carr.append(np.sum(color_masks[i]))
-    maxc = np.argmax(carr)
-    maxg = np.argmax(garr)
+    for i in np.arange( np.shape(solder_reg)[0]):
+        carr.append(np.sum(solder_reg[i]))
+    n = np.arange(len(carr))
+    Z = [x for _, x in sorted(zip(carr, n))][::-1]
+    soldermask_mask = total_reg[Z[0], :, :]
+    serigraphy_mask = total_reg[Z[1], :, :]
 
-    print "propuesta soldermask ", maxc, " propuesta serigrafia ", maxg
-    print "con valores de ", carr, garr
-
-    back = get_conected(color_masks[maxc], gray_masks[maxg])
+    # Y se obtiene la mayor mascara conexa de esas zonas
+    back = get_conected(soldermask_mask, serigraphy_mask)
     return back
 
-def color_cluster(img, n_colors = 2, n_grays = 3):
+# Funcion para realizar clustering de color a imagen generica, permite cuardar la imagen colorizada
+def color_cluster(img, n_colors = 2, n_grays = 3, save=False):
+    # se obtienen dimensiones originales de imagen
     w, h, d = original_shape = tuple(img.shape)
     # Se obtiene la imagen clusterizada en color hsv
-
     gray_masks, color_masks, color_codebook, gray_codebook = hsv_kmeans(img, n_colors, n_grays)
 
     print "generando mascara con color"
-    # Se recuperan mascaras
+    # Se recuperan mascaras y crea imagen reconstruida
     res_image = np.zeros(original_shape, np.uint8)
-    gray_image = np.zeros(original_shape, np.uint8)
-    color_image = np.zeros(original_shape, np.uint8)
-
+    # Se pintan mascaras
     for i in np.arange(np.shape(gray_masks)[0]):
+        # llamando a funcion paint_mask
         painted_mask = paint_mask(gray_masks[i], gray_codebook[i])
-        #hsvplot(painted_mask)
-        # hsvwrite(folder +"gray_mask"+str(i)+".png", painted_mask)
+        # y acumulando resultados en res_image
         res_image += painted_mask
-        gray_image += painted_mask
 
     for i in np.arange(np.shape(color_masks)[0]):
         painted_mask = paint_mask(color_masks[i], color_codebook[i])
-        # hsvwrite(folder + "painted_mask" + str(i)+".png", painted_mask)
-        #hsvplot(painted_mask)
         res_image += painted_mask
-        color_image += painted_mask
-    #cv2.imwrite(img)
-    hsvplot(res_image)
-    #hsvplot(gray_image)
-    #hsvplot(color_image)
-    #hsvplot(paint_mask(color_masks[1] + gray_masks[1], color_codebook[0]))
 
-n_colors = 2
-n_grays = 3
-folder="/Users/Jpcoseco/PycharmProjects/OPGE/test/"
+    # Se convierte el espacio de color de vuelta a BGR
+    res_image=cv2.cvtColor(res_image, cv2.COLOR_HSV2BGR)
 
+    # Si usa opcion save, se guarda imagen
+    if save:
+        cv2.imwrite("reshaped.png" ,res_image)
 
-# Carga imagen, transforma a opencv y cambia tamano
-img = cv2.imread('perro.jpg')
-color_cluster(img,10,10)
-cv2.waitKey(0)
-# Se obtiene la imagen clusterizada en color hsv
-"""gray_masks, color_masks, color_codebook, gray_codebook=hsv_kmeans(img,n_colors,n_grays)
+    return res_image, color_masks, gray_masks
 
-# Se obtienen zonas mayoritarias, en este caso la mayor color sera soldermask y la mayor gris serigrafia
-garr=[]
-for i in np.arange(np.shape(gray_masks)[0]):
-    garr.append(np.sum(gray_masks[i]))
+# Funcion para obtener bounding boxes estimadas de componentes
+def get_bbs(comp_mask):
 
-carr=[]
-for i in np.arange(np.shape(color_masks)[0]):
-    carr.append(np.sum(color_masks[i]))
-maxc=np.argmax(carr)
-maxg=np.argmax(garr)
+    # Se obtienen areas conexas
+    n_areas, labels, stats, centroids = cv2.connectedComponentsWithStats(comp_mask)
+    # Se itera sobre cada area conexa calculando y guardando bounding box
+    bbs=[]
+    for i in np.arange(n_areas):
+        segm=np.array(np.equal( labels, np.ones(labels.shape)*i),np.uint8)
+        x, y, w, h = cv2.boundingRect(segm)
+        bbs.append([x,y,w,h])
 
+    return bbs
 
-print "propuesta soldermask ", maxc, " propuesta serigrafia ", maxg
-print "con valores de ", carr,garr
-
-# Cambiar a true para obtener mascaras
-mm=False
-
-if (mm==True):
-    print "generando mascara con color"
-    #Se recuperan mascaras
-    res_image = np.zeros((w, h, d),np.uint8)
-    gray_image = np.zeros((w, h, d),np.uint8)
-    color_image=  np.zeros((w, h, d),np.uint8)
-
-    for i in np.arange(np.shape(gray_masks)[0]):
-        painted_mask=paint_mask(gray_masks[i], gray_codebook[i])
-        hsvplot( painted_mask)
-        #hsvwrite(folder +"gray_mask"+str(i)+".png", painted_mask)
-        res_image+=painted_mask
-        gray_image+=painted_mask
-
-
-    for i in np.arange(np.shape(color_masks)[0]):
-        painted_mask = paint_mask(color_masks[i], color_codebook[i])
-        #hsvwrite(folder + "painted_mask" + str(i)+".png", painted_mask)
-        hsvplot( painted_mask)
-        res_image += painted_mask
-        color_image += painted_mask
-    hsvplot(res_image)
-    hsvplot(gray_image)
-    hsvplot(color_image)
-    hsvplot(paint_mask(color_masks[1]+gray_masks[1],color_codebook[0]))
-
-back=get_conected(color_masks[maxc],gray_masks[maxg])
-imand=cv2.bitwise_and(img,img,mask=back)
-pads=cv2.bitwise_and(img,img,mask=cv2.bitwise_not(back))
-cv2.imwrite("comps.png",pads)
-cv2.imwrite("Back.png",back)
-
-
-# todo - generalizar para cualquier placa incluyendo fondo"""
